@@ -1,0 +1,349 @@
+\section{Experiments }
+
+\subsection{Evaluation Details}
+
+\textbf{Baseline Systems}. To validate the Qwen3-ASR family, we conduct comparative evaluations against state-of-the-art (SOTA) closed-source ASR APIs and widely used open-source models. Specifically, we compare Qwen3-ASR with three leading proprietary services: GPT-4o-Transcribe~\citep{gpt4o}, Gemini-2.5-Pro~\citep{gemini2.5}, and Doubao-ASR~\citep{seedasr}. We further include several multilingual open-source baselines, namely Whisper-large-v3~\citep{icml2023-alec-Whisper}, FunASR-MLT-Nano~\citep{funasr-slm}, and GLM-ASR-Nano~\citep{zai-glm-asr-2512}. Together, these baselines represent strong commercial systems and competitive open-source alternatives, enabling a comprehensive evaluation of Qwen3-ASR under representative real-world conditions.
+
+\textbf{Benchmark Introduction}. We adopt a four-part evaluation protocol to measure the speech recognition performance of the proposed Qwen3-ASR series:
+\begin{enumerate}[leftmargin=*,itemsep=0.25em]
+% \begin{enumerate}
+  \item \textbf{Public benchmarks (English and Chinese).} We evaluate a broad set of public benchmarks~\citep{conneau2023fleurs, ardila2020common, zhang2022wenetspeech, panayotov2015librispeech,  dai2025wenetspeech, li2025wenetspeech} and report the results separately for subsets of English, standard Mandarin and Chinese dialects, including two recently released benchmarks.
+  \item \textbf{Internal robustness suite.} We stress-test the model under challenging real-world conditions using a comprehensive in-house suite, covering English speech from multiple countries and accents (16 accent groups in total), 22 Chinese dialect varieties, and difficult scenarios including elderly and children's speech, extremely low signal-to-noise~(SNR) ratios, nonfluent and tongue-twister-like repetitive speech, and multi-speaker Chinese conversational speech. These settings enable a systematic assessment of robustness to accent/dialect variability and complex acoustic and linguistic conditions.
+  \item \textbf{Multilingual evaluation.} The model supports ASR for 30 languages. We evaluate on Common Voice, Fleurs, MLS, MLC-SLM~\citep{mlcslm}, and an internally curated test set spanning 15 languages. The language inventory of each benchmark is specified in~\Cref{method:features}. Since Fleurs covers a particularly large and diverse set of languages, we additionally report results on progressively expanded language subsets grouped by language popularity and practical usage for a more fine-grained characterization. Meaning while, we evaluate the language identification performance on the multilingual open-source benchmarks. 
+  \item \textbf{Singing voice recognition.} We evaluate singing voice transcription on both public benchmarks and an internal test set. In the internal evaluation, we emphasize long-form transcription where an entire song is provided as a single input, to assess robustness to long-duration audio as well as the distinctive acoustic and rhythmic properties of singing.
+\end{enumerate}
+
+\textbf{Evaluation Metrics}. For recognition accuracy, we report either \textbf{word error rate~(WER)} or \textbf{character error rate~(CER)} depending on the language. We use CER for character-based languages~(e.g., Mandarin Chinese, Cantonese, and Korean) and WER for word-delimited languages~(e.g., English, German, and French). When aggregated results are needed (e.g., average performance across multiple languages or dialects), we report the macro-average (i.e., the unweighted mean across languages/dialects). The best result in each table is highlighted in \textbf{bold}. In addition, when Qwen3-ASR-0.6B is the best-performing model after excluding the larger Qwen3-ASR-1.7B, we also highlight it in bold.
+
+For language identification, we report \textbf{language identification accuracy}.
+
+For timestamp accuracy, Qwen3-ForcedAligner uses \textbf{Accumulated Average Shift} (AAS~\cite{shi2023achieving}), where lower values indicate more accurate timestamp predictions. AAS is defined as the mean absolute difference between predicted timestamps and reference timestamps over all timestamp slots in the evaluated datasets:
+\begin{equation}
+    \mathrm{AAS}=\frac{1}{N}\sum_{i=1}^{N}\left|\hat{n}_i-n_i\right|,
+\end{equation}
+where $N$ is the total number of timestamp slots, $\hat{n}_i$ denotes the timestamp predicted by Qwen3-ForcedAligner for slot $i$, and $n_i$ is the corresponding reference timestamp obtained from Montreal Forced Aligner (MFA) or manual annotations.
+
+
+\subsection{English \& Chinese ASR Performance}
+\subsubsection{Opensource ASR Benchmarks}
+
+As shown in~\Cref{tab:asr-zh-en-opensource}, Qwen3-ASR delivers consistently strong performance across English, Mandarin Chinese, and multiple Chinese dialect benchmarks. It is competitive with leading commercial APIs while substantially outperforming widely used open-source baselines. Scaling from Qwen3-ASR-0.6B to Qwen3-ASR-1.7B yields clear and stable gains, indicating that the model benefits effectively from increased capacity.
+
+On \textbf{English} benchmarks, Qwen3-ASR performs particularly well on diverse, real-world data (e.g., crowd-sourced or web-collected speech), where distribution shift is more pronounced than in read-speech settings. In these cases, Qwen3-ASR-1.7B achieves the strongest overall results on several datasets, while remaining close to the best-performing systems on standard academic evaluations such as LibriSpeech. Compared with commercial APIs, whose performance can vary substantially across datasets, Qwen3-ASR shows more consistent accuracy across a broad range of English conditions.
+
+On \textbf{Mandarin Chinese}, Qwen3-ASR demonstrates a clear advantage. It delivers the best overall performance on most Mandarin benchmarks in the table and remains reliable on more challenging large-scale evaluations. Notably, on WenetSpeech, which contains diverse acoustic environments and meeting-style speech, Qwen3-ASR outperforms the available baselines by a large margin.
+
+On \textbf{Chinese dialect} benchmarks, Qwen3-ASR maintains strong accuracy under substantial pronunciation and lexical variation. It consistently ranks among the top systems across Cantonese and other dialect datasets, and performs particularly well on more challenging long-utterance settings, demonstrating robustness beyond short, clean test conditions. While a small number of dialect-specific cases favor specialized commercial APIs, Qwen3-ASR remains highly competitive overall and provides a strong general-purpose solution across dialects without per-dialect customization.
+
+Overall,~\Cref{tab:asr-zh-en-opensource} highlights three key advantages of Qwen3-ASR: (i) strong cross-domain generalization on English benchmarks beyond curated read speech, (ii) state-of-the-art accuracy on Mandarin Chinese across multiple public datasets including large-scale, noisy meeting-style speech, and (iii) robust handling of Chinese dialects, with especially strong performance on Cantonese and long/short dialectal speech. These findings demonstrate that Qwen3-ASR delivers strong, reproducible performance across diverse public benchmarks, while also remaining competitive with top-tier closed-source APIs.
+
+\begin{table}[ht]
+\centering
+\caption{\textbf{Evaluation on English, Mandarin Chinese, and a range of Chinese dialect benchmarks. For the commercial APIs and the open-source Whisper-large-v3 model, we obtained results by running inference on the test sets ourselves due to the absence of published numbers; for FunASR-MLT-Nano, we report the results from its official technical report. "N/A" denotes that we cannot get a reasonable result by the official API. "–" indicates that the corresponding benchmark result is not reported.}}
+\vspace{-0.1in}
+\label{tab:asr-zh-en-opensource}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}clccccc|ccc@{}}
+\toprule
+\multicolumn{2}{l}{} &
+\begin{tabular}[c]{@{}c@{}}\textbf{GPT-4o}\\ \textbf{-Transcribe}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Gemini-2.5}\\ \textbf{-Pro}\end{tabular} &
+\textbf{Doubao-ASR} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Whisper}\\ \textbf{-large-v3}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Fun-ASR}\\ \textbf{-MLT-Nano}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Qwen3-ASR}\\ \textbf{-0.6B}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Qwen3-ASR}\\ \textbf{-1.7B}\end{tabular}
+\\
+\midrule
+\multicolumn{9}{l}{\textit{\textbf{English~(en)}}} \\ \midrule
+    & LibriSpeech    & \multirow{2}{*}{\textbf{1.39}|3.75} & \multirow{2}{*}{2.89|3.56} & \multirow{2}{*}{2.78|5.70} & \multirow{2}{*}{1.51|3.97} & \multirow{2}{*}{1.68|4.03} & \multirow{2}{*}{2.11|4.55} & \multirow{2}{*}{1.63|\textbf{3.38}}  \\
+    & \textit{clean | other}    & & &  &   & & &  \\
+    & GigaSpeech             & 25.50 & 9.37 & 9.55  & 9.76   & - & \textbf{8.88}  & \textbf{8.45}  \\
+    & CV-en                  & 9.08  & 14.49 & 13.78 & 9.90 & 9.90 & 9.92 & \textbf{7.39} \\
+    & Fleurs-en              & \textbf{2.40}  & 2.94 & 6.31 & 4.08 & 5.49 & 4.39 & 3.35 \\
+    & MLS-en                 & 5.12  & \textbf{3.68} & 7.09   & 4.87 & - & 6.00 & 4.58 \\
+
+    & Tedlium                & 7.69  & 6.15 & 4.91    & 6.84  & - & \textbf{3.85}   & \textbf{4.50} \\
+    & VoxPopuli             & 10.29 & 11.36 & 12.12   & 12.05 & - & \textbf{9.96}   & \textbf{9.15}  \\
+
+\midrule
+\multicolumn{9}{l}{\textit{\textbf{Chinese~(zh)}}} \\ \midrule
+    & WenetSpeech  & \multirow{2}{*}{15.30|32.27} & \multirow{2}{*}{14.43|13.47} & \multirow{2}{*}{N/A}  & \multirow{2}{*}{9.86|19.11} & \multirow{2}{*}{6.35|-} & \multirow{2}{*}{\textbf{5.97}|\textbf{6.88}} & \multirow{2}{*}{\textbf{4.97}|\textbf{5.88}} \\
+    & \textit{net | meeting} &    &       &      &         &        & & \\
+    & AISHELL-2-test           & 4.24  & 11.62 & 2.85  & 5.06 & - & 3.15 & \textbf{2.71} \\
+    & SpeechIO     & 12.86 & 5.30 & 2.93   & 7.56 & - & 3.44 & \textbf{2.88} \\
+    & Fleurs-zh           & 2.44  & 2.71 & 2.69 & 4.09 & 3.51 & 2.88 & \textbf{2.41} \\
+    & CV-zh     & 6.32  & 7.70 & 5.95    & 12.91 & 6.20 & 6.89 & \textbf{5.35} \\
+
+\midrule
+\multicolumn{9}{l}{\textit{\textbf{Chinese Dialect}}} \\ \midrule
+    & KeSpeech     & 26.87 & 24.71 & 5.27  & 28.79 & - & 7.08 & \textbf{5.10} \\
+    & Fleurs-yue   & 4.98  & 9.43 & 4.98 & 9.18 & - & 5.79 & \textbf{3.98} \\
+    & CV-yue       & 11.36 & 18.76 & 13.20  & 16.23 & - & 9.50 & \textbf{7.57} \\
+    & CV-zh-tw     & 6.32  & 7.31 & 4.06   & 7.84 & - & 5.59 & \textbf{3.77} \\
+    & WenetSpeech-Yue        & \multirow{2}{*}{15.62|25.29}  &   \multirow{2}{*}{25.19|11.23}  & \multirow{2}{*}{9.74|11.40} & \multirow{2}{*}{32.26|46.64} & \multirow{2}{*}{-|-} & \multirow{2}{*}{7.54|9.92} & \multirow{2}{*}{\textbf{5.82}|\textbf{8.85}} \\
+    & \textit{short | long}   &  &   &  &      & & & \\
+    & WenetSpeech-Chuan      & \multirow{2}{*}{34.81|53.98}   & \multirow{2}{*}{43.79|67.30} & \multirow{2}{*}{\textbf{11.40}|\textbf{20.20}}   &  \multirow{2}{*}{14.35|26.80} & \multirow{2}{*}{-|-} & \multirow{2}{*}{13.92|24.45} & \multirow{2}{*}{11.99|21.63} \\
+    & \textit{easy | hard }  &  &   &       &      &  & & \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\subsubsection{Internal ASR Benchmarks}
+
+\begin{table}[ht]
+\centering
+\caption{\textbf{Evaluation on internal English and Chinese test sets covering multiple accents and dialects, as well as challenging acoustic conditions and difficult speaking scenarios.}}
+\vspace{-0.1in}
+\label{tab:asr_internal_zh_en}
+\begin{threeparttable}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}clccccc|cc@{}}
+\toprule
+\multicolumn{2}{l}{} &
+\begin{tabular}[c]{@{}c@{}}\textbf{GPT-4o}\\ \textbf{-Transcribe}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Gemini-2.5}\\ \textbf{-Pro}\end{tabular} &
+\textbf{Doubao-ASR} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Whisper}\\ \textbf{-large-v3}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Fun-ASR}\\ \textbf{-MLT-Nano}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Qwen3-ASR}\\ \textbf{-0.6B}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Qwen3-ASR}\\ \textbf{-1.7B}\end{tabular} \\
+\midrule
+\multicolumn{9}{l}{\textit{\textbf{Accented English}}} \\ \midrule
+& Dialog-Accented English & 28.56 & 23.85 & 20.41 & 21.30 & 19.96 & \textbf{16.62} & \textbf{16.07} \\
+\midrule
+\multicolumn{9}{l}{\textit{\textbf{Chinese Mandarin}}} \\ \midrule
+& Elders\&Kids     & 14.27 & 36.93 & 4.17  & 10.61 & 4.54  & 4.48 & \textbf{3.81} \\
+& ExtremeNoise     & 36.11 & 29.06 & 17.04 & 63.17 & 36.55 & 17.88 & \textbf{16.17} \\
+& TongueTwister    & 20.87 & 4.97  & 3.47  & 16.63 & 9.02  & 4.06 & \textbf{2.44} \\
+& Dialog-Mandarin & 20.73 & 12.50 & 6.61  & 14.01 & 7.32  & 7.06 & \textbf{6.54} \\
+\midrule
+\multicolumn{9}{l}{\textit{\textbf{Chinese Dialect}}} \\ \midrule
+& Dialog-Cantonese             & 16.05 & 14.98 & 7.56  & 31.04 & 5.85  & \textbf{4.80} & \textbf{4.12} \\
+& Dialog-Chinese Dialects  & 45.37 & 47.70 & 19.85 & 44.55 & 19.41 & \textbf{18.24} & \textbf{15.94} \\
+\bottomrule
+\end{tabular}%
+}
+\begin{tablenotes}[flushleft]
+\footnotesize
+\begin{minipage}{\textwidth}
+\item \textbf{Dialect coverage:} Results for \textit{Dialog-Accented English} are averaged over 16 accents, and results for \textit{Dialog-Chinese Dialects} are averaged over 22 Chinese dialects. Detailed category definitions are provided in~\Cref{method:features}.
+\end{minipage}
+\end{tablenotes}
+
+\end{threeparttable}
+\end{table}
+
+To further assess robustness in realistic deployment settings, we evaluate Qwen3-ASR on our internal robustness suite; results are summarized in Table~\ref{tab:asr_internal_zh_en}. Qwen3-ASR delivers consistently strong performance across all subsets, and scaling from 0.6B to 1.7B yields stable gains. In the accented-English evaluation, Qwen3-ASR achieves the lowest WER among all compared systems, surpassing both commercial APIs and open-source baselines, indicating better generalization to accent variation. On Mandarin, Qwen3-ASR-1.7B performs best across all evaluated subsets, demonstrating robustness under difficult acoustic and speaking conditions. In dialectal Chinese, Qwen3-ASR again achieves the best results on both conversational Cantonese and the aggregated 22-dialect evaluation; the gains are particularly pronounced in the multi-dialect mixture, highlighting improved robustness as linguistic diversity increases. Overall, these internal results are consistent with the public-benchmark findings and further confirm that Qwen3-ASR provides reliable recognition quality in high-variability scenarios.
+
+
+\subsection{ Multilingual ASR and Language Identification}
+\subsubsection{Multilingual ASR Performance}
+
+\begin{table}[ht]
+\centering
+\caption{\textbf{Evaluation of multilingual ASR systems on a comprehensive set of benchmark datasets. }}
+\vspace{-0.1in}
+\label{tab:asr-multilingual-asr}
+\begin{threeparttable}
+\resizebox{0.85\textwidth}{!}{%
+\begin{tabular}{@{}clccccc@{}}
+\toprule
+\multicolumn{2}{l}{} &
+\begin{tabular}[c]{@{}c@{}}\textbf{GLM-ASR}\\ \textbf{-Nano-2512}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Whisper}\\ \textbf{-large-v3}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Fun-ASR}\\ \textbf{-MLT-Nano}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Qwen3-ASR}\\ \textbf{-0.6B}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Qwen3-ASR}\\ \textbf{-1.7B}\end{tabular} \\
+\midrule
+\multicolumn{7}{l}{\textit{\textbf{Open-sourced Benchmarks}}} \\
+\midrule
+& MLS                 & 13.32 & 8.62  & 28.70  & 13.19 & \textbf{8.55}  \\
+& CommonVoice         & 19.40 & 10.77 & 17.25  & 12.75 & \textbf{9.18}  \\
+& MLC-SLM             & 34.93 & 15.68 & 29.94  & 15.84 & \textbf{12.74}  \\
+\midrule
+& Fleurs              & 16.08 & 5.27  & 10.03  & 7.57  & \textbf{4.90}  \\
+& Fleurs$^{\dagger}$  & 20.05 & 6.85  & 31.89  & 10.37 & \textbf{6.62}  \\
+& Fleurs$^{\dagger}$$^{\dagger}$ & 24.83 & \textbf{8.16} & 47.84 & 21.80 & 12.60 \\
+\midrule
+\multicolumn{7}{l}{\textit{\textbf{Qwen-ASR Internal Benchmarks}}} \\ \midrule
+& News-Multilingual   & 49.40 & 14.80 & 65.07  & 17.39 & \textbf{12.80} \\
+\bottomrule
+\end{tabular}
+
+}
+\begin{tablenotes}
+\footnotesize
+\begin{minipage}{\textwidth}
+\item \textbf{Language coverage:} 
+\textit{MLS} includes 8 languages: \{da, de, en, es, fr, it, pl, pt\}. \\
+\textit{CommonVoice} includes 13 languages: \{en, zh, yue, zh\_TW, ar, de, es, fr, it, ja, ko, pt, ru\}. \\
+\textit{MLC-SLM} includes 11 languages: \{en, fr, de, it, pt, es, ja, ko, ru, th, vi\}. \\
+\textit{Fleurs} includes 12 languages: \{en, zh, yue, ar, de, es, fr, it, ja, ko, pt, ru \}. \\
+\textit{Fleurs$^{\dagger}$} includes 8 additional languages beyond \textit{Fleurs}: \{hi, id, ms, nl, pl, th, tr, vi\}. \\
+\textit{Fleurs$^{\dagger\dagger}$} includes 10 additional languages beyond \textit{Fleurs$^{\dagger}$}: \{cs, da, el, fa, fi, fil, hu, mk, ro, sv\}. \\
+\textit{News-Multilingual} includes 15 languages: \{ar, de, es, fr, hi, id, it, ja, ko, nl, pl, pt, ru, th, vi\}.
+\end{minipage}
+\end{tablenotes}
+\end{threeparttable}
+\end{table}
+
+
+In this part, we illustrate the multilingual ASR performance of the Qwen3-ASR series on a broad set of public benchmarks as well as our internal multilingual news evaluation (Table~\ref{tab:asr-multilingual-asr}). Overall, Qwen3-ASR-1.7B achieves the best average performance on most test settings, showing strong generalization across languages and domains, while Qwen3-ASR-0.6B provides a competitive lightweight alternative.
+
+On MLS, Common Voice and MLC-SLM benchmarks, Qwen3-ASR-1.7B consistently outperforms the evaluated open-source baselines, including the widely used Whisper-large-v3, and substantially surpasses smaller multilingual models. For Fleurs, which spans more languages and diverse recording conditions, Qwen3-ASR-1.7B achieves the best performance on the 12- and 20-language subsets. However, relative to Whisper-large-v3, its performance degrades on the full 30-language setting, indicating room for improvement in handling increased linguistic diversity and long-tail languages. Nevertheless, Qwen3-ASR-1.7B remains markedly better than the 0.6B variant, suggesting that model scaling improves robustness in more challenging multilingual regimes.
+
+
+Finally, on our internal News-Multilingual benchmark, Qwen3-ASR-1.7B achieves the best overall performance, demonstrating stronger robustness to domain shift (e.g., broadcast/news-style speech) than all baselines. Overall, these results indicate effective scaling behavior and strong multilingual recognition across both public and internal evaluations. Per-language results for the Qwen3-ASR family are provided in the Appendix.
+
+
+\subsubsection{Language Identification Performance}
+
+\begin{table}[h]
+\centering
+\caption{\textbf{Language identification accuracy~(\%) $\uparrow$ on open-source multilingual test sets.}}
+\vspace{-0.1in}
+\label{tab:langid_fleurs_cv}
+
+\begin{threeparttable}
+\resizebox{0.75\textwidth}{!}{%
+\begin{tabular}{@{}lccc@{}}
+\toprule
+& \textbf{Whisper-large-v3} & \textbf{Qwen3-ASR-0.6B} & \textbf{Qwen3-ASR-1.7B} \\ \midrule
+MLS           & \textbf{99.9} & 99.3 & \textbf{99.9} \\
+CommonVoice   & 92.7 & \textbf{98.2} & \textbf{98.7} \\
+MLC-SLM       & 89.2 & \textbf{92.7} & \textbf{94.1} \\
+Fleurs        & 94.6 & \textbf{97.1} & \textbf{98.7} \\
+\midrule
+\textit{\textbf{Avg.}} & 94.1 & \textbf{96.8} & \textbf{97.9} \\
+\bottomrule
+\end{tabular}%
+}
+
+\begin{tablenotes}[flushleft]
+\footnotesize
+\begin{minipage}{\textwidth}
+\item \textbf{Language coverage:} The language sets follow \Cref{tab:asr-multilingual-asr}. Here, Fleurs corresponds to Fleurs$^{\dagger\dagger}$ in \Cref{tab:asr-multilingual-asr} and covers 30 languages.
+\end{minipage}
+\end{tablenotes}
+
+\end{threeparttable}
+\end{table}
+
+Following the output template in~\Cref{section:traning-strategies}, Qwen3-ASR not only decodes speech into text, but also performs language identification (LID) via natural-language prompting before ASR decoding. In this section, we evaluate LID accuracy on 4 multilingual benchmarks: Fleurs (30 languages), MLS~(9 languages),  CommonVoice~(13 languages), MLC-SLM~(11 languages); the covered languages are detailed in~\Cref{method:features}. As shown in Table~\ref{tab:langid_fleurs_cv}, we compare Qwen3-ASR-0.6B and Qwen3-ASR-1.7B with Whisper-large-v3, a strong multilingual ASR model with built-in LID capability. Both Qwen3-ASR models outperform Whisper-large-v3, demonstrating stable and effective language identification across these mainstream languages. Most remaining errors on Fleurs stem from confusion between Malay~(ms) and Indonesian~(id), two closely related languages with high acoustic similarity.
+
+\subsection{Singing Voice \& Songs Recognition Performance}
+
+\begin{table}[ht]
+\centering
+\caption{\textbf{Singing-voice and song-transcription results. WER~(\%) is reported for singing-only benchmarks and long-form songs with background music. "N/A" indicates that the model does not support long-form song recognition due to the poor performance.}}
+\vspace{-0.1in}
+\label{tab:singing-and-songs}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}clccccc|cc@{}}
+\toprule
+\multicolumn{2}{l}{} &
+\begin{tabular}[c]{@{}c@{}}\textbf{GPT-4o}\\ \textbf{-Transcribe}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Gemini-2.5}\\ \textbf{-Pro}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Doubao-ASR}\\ \textbf{-1.0}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Whisper}\\ \textbf{-large-v3}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Fun-ASR-MLT}\\ \textbf{-Nano}\end{tabular} &
+\begin{tabular}[c]{@{}c@{}}\textbf{Qwen3-ASR}\\ \textbf{-1.7B}\end{tabular} &
+\\
+\midrule
+\multicolumn{7}{l}{\textit{\textbf{Singing}}} \\ \midrule
+    & M4Singer      & 16.77  & 20.88 & 7.88   & 13.58 & 7.29  & \textbf{5.98}  \\
+    & MIR-1k-vocal  & 11.87  & 9.85  & 6.56   & 11.71 & 8.17  & \textbf{6.25} \\   
+    & Opencpop      & 7.93   & 6.49  & 3.80   & 9.52  & \textbf{2.98}  & 3.08 \\   
+    & Popcs         & 32.84  & 15.13 & 8.97   & 13.77 & 9.42  & \textbf{8.52}  \\   
+\midrule
+\multicolumn{7}{l}{\textit{\textbf{Songs with BGM}}} \\ \midrule
+    & EntireSongs-en & 30.71 & \textbf{12.18} & 33.51 & N/A & N/A & 14.60  \\
+    & EntireSongs-zh & 34.86 & 18.68 & 23.99  & N/A & N/A & \textbf{13.91}\\
+\bottomrule
+\end{tabular}
+
+}
+\end{table}
+
+Table~\ref{tab:singing-and-songs} reports results for singing-voice transcription and long-form song transcription with background music. Overall, Qwen3-ASR-1.7B is robust to melody-induced pronunciation variation and musical accompaniment, outperforming most commercial APIs and open-source baselines across the evaluated sets. For \textbf{singing-only} benchmarks, it achieves the best performance for M4Singer, MIR-1k-vocal, and Popcs, while remaining competitive for Opencpop (second to FunASR-MLT-Nano by a small margin), indicating strong generalization across singing styles and recording conditions with reduced sensitivity to pitch drift, phoneme elongation, and rhythmic lyric variation. For \textbf{full songs with background music}, Qwen3-ASR-1.7B substantially outperforms open-source baselines; Whisper-large-v3 and FunASR-MLT-Nano degrade markedly in long-form, music-mixed settings. It achieves high accuracy for both English and Chinese songs, ranking first on the Chinese set and remaining competitive with the best commercial system on the English set, suggesting that Qwen3-ASR is well suited to realistic music-containing scenarios and background-music-robust and narrows the gap between speech ASR and singing/song transcription.
+
+\subsection{Streaming Speech Recognition}
+
+This section evaluates Qwen3-ASR-1.7B and Qwen3-ASR-0.6B in both offline and streaming inference modes. Benefiting from the dynamic attention-window mechanism, the Qwen3-ASR family supports streaming inference naturally. Table~\ref{tab:streaming} reports results on three open-source test sets using a 2-second chunk size, a 5-token fallback, and keeping the last four chunks unfixed. Overall, Qwen3-ASR provides a unified model for offline and streaming use, while streaming inference preserves strong recognition accuracy.
+
+\begin{table}[ht]
+\centering
+\caption{\textbf{ASR performance of the two inference modes on three open-source benchmarks.}}
+\label{tab:streaming}
+\resizebox{0.68\textwidth}{!}{%
+\begin{tabular}{cccccc}
+\toprule
+\textbf{Model}        &  \textbf{Infer. Mode}   & \textbf{Librispeech} & \textbf{Fleurs-en} & \textbf{Fleurs-zh} & \textbf{Avg.} \\ 
+\midrule
+\multirow{2}{*}{\textbf{Qwen3-ASR-1.7B}} & Offline   & 1.63 | 3.38          & 3.35               & 2.41               & 2.69          \\
+ & Streaming & 1.95 | 4.51          & 4.02               & 2.84               & 3.33          \\ 
+\midrule
+\multirow{2}{*}{ \textbf{Qwen3-ASR-0.6B}} & Offline   & 2.11 | 4.55          & 4.39               & 2.88               & 3.48          \\
+& Streaming & 2.54 | 6.27          & 5.38               & 3.40               & 4.40          \\ 
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\subsection{Precision of Timestamps}
+\begin{table}[ht]
+\centering
+\caption{\textbf{Accumulated Average Shift (AAS, ms) $\downarrow$ of Qwen3-ForcedAligner-0.6B and competing forced-alignment methods on MFA-labeled and human-labeled test sets.}}
+\label{tab:fa_results}
+\resizebox{0.86\textwidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+                       & \textbf{Monotonic-Aligner} & \textbf{NFA}   & \textbf{WhisperX} & \textbf{Qwen3-ForcedAligner-0.6B} \\ \midrule
+\multicolumn{5}{l}{\textit{\textbf{MFA-Labeled Raw}}}                               \\ \midrule
+Chinese                & 161.1             & 109.8 & -        & \textbf{33.1}       \\
+English                & -                 & 107.5 & 92.1     & \textbf{37.5}       \\
+French                 & -                 & 100.7 & 145.3    & \textbf{41.7}       \\
+German                 & -                 & 122.7 & 165.1    & \textbf{46.5}       \\
+Italian                & -                 & 142.7 & 155.5    & \textbf{75.5}       \\
+Japanese               & -                 & -     & -        & \textbf{42.4}       \\
+Korean                 & -                 & -     & -        & \textbf{37.2}       \\
+Portuguese             & -                 & -     & -        & \textbf{38.4}       \\
+Russian                & -                 & 200.7 & -        & \textbf{40.2}       \\
+Spanish                & -                 & 124.7 & 108.0    & \textbf{36.8}       \\
+\textit{\textbf{Avg.}} & 161.1             & 129.8 & 133.2    & \textbf{42.9}       \\ \midrule
+\multicolumn{5}{l}{\textit{\textbf{MFA-Labeled Concat-300s}}}                        \\ \midrule
+Chinese                & 1742.4            & 235.0 & -        & \textbf{36.5}       \\
+English                & -                 & 226.7 & 227.2    & \textbf{58.6}       \\
+French                 & -                 & 230.6 & 2052.2   & \textbf{53.4}       \\
+German                 & -                 & 220.3 & 993.4    & \textbf{62.4}       \\
+Italian                & -                 & 290.5 & 5719.4   & \textbf{81.6}       \\
+Japanese               & -                 & -     & -        & \textbf{81.3}       \\
+Korean                 & -                 & -     & -        & \textbf{42.2}       \\
+Portuguese             & -                 & -     & -        & \textbf{50.0}       \\
+Russian                & -                 & 283.3 & -        & \textbf{43.0}       \\
+Spanish                & -                 & 240.2 & 4549.9   & \textbf{39.6}       \\
+Cross-lingual           & -                 & -     & -        & \textbf{34.2}       \\
+\textit{\textbf{Avg.}} & 1742.4            & 246.7 & 2708.4   & \textbf{52.9}       \\ \midrule
+\multicolumn{5}{l}{\textit{\textbf{Human-Labeled}}}                                 \\ \midrule
+Raw                    & 49.9              & 88.6  & -        & \textbf{27.8}       \\
+Raw-Noisy              & 53.3              & 89.5  & -        & \textbf{41.8}       \\
+Concat-60s              & 51.1              & 86.7  & -        & \textbf{25.3}       \\
+Concat-300s             & 410.8             & 140.0 & -        & \textbf{24.8}       \\
+Concat-Cross-lingual     & -                 & -     & -        & \textbf{42.5}       \\
+\textit{\textbf{Avg.}} & 141.3             & 101.2 & -        & \textbf{32.4}       \\ \bottomrule
+\end{tabular}
+}
+\end{table}
+
+%Qwen3-ForcedAligner-0.6B is trained on a corpus of approximately 56,000 hours spanning 11 languages: Cantonese, Chinese, English, French, German, Italian, Japanese, Korean, Portuguese, Russian, and Spanish.
+%This corpus is drawn from a combination of internal and open-source datasets and covers a wide range of scenarios, including read speech, conversational speech, podcasts, and meetings.
+
+% Qwen3-ForcedAligner uses accumulated average shift (AAS)~\cite{xian2023achieving} to evaluate timestamp prediction performance. A lower AAS indicates more accurate timestamp predictions. Specifically, AAS measures the average shift at each timestamp slot, defined as the mean absolute difference between the predicted timestamps and the ground-truth timestamps across all slots in the test datasets:
+% \begin{equation}
+%     \text{AAS}=\frac{ {\textstyle \sum_{n=1}^{N}} \left | \hat n_i - n_i \right | }{N},
+% \end{equation}
+% where $N$ is the total number of timestamp slots in the test datasets, $\hat n_i$ is the predicted timestamp from Qwen3-ForcedAligner, and $n_i$ can be timestamps obtained from MFA or manual annotations.
+
+Table~\ref{tab:fa_results} reports the AAS of Qwen3-ForcedAligner-0.6B and competing forced-alignment methods on MFA-labeled and human-labeled test sets. Competing methods require language-specific models and support only a limited set of languages, whereas Qwen3-ForcedAligner-0.6B covers multiple languages with a single model and supports cross-lingual, code-switched scenarios. In addition, Qwen3-ForcedAligner-0.6B performs consistently on both short and long utterances, while baseline methods show a sharp degradation in timestamp accuracy on long utterances. Although trained with MFA pseudo-labels, Qwen3-ForcedAligner-0.6B still achieves low AAS on the human-labeled test sets, indicating strong real-world generalization.
