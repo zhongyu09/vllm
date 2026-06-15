@@ -24,13 +24,109 @@ The script:
 import argparse
 import asyncio
 import json
+import math
+from io import BytesIO
+from pathlib import Path
+from typing import Union
 
 import numpy as np
 import pybase64 as base64
 import websockets
 
-from vllm.assets.audio import AudioAsset
-from vllm.multimodal.media.audio import load_audio
+
+def _load_audio(
+    path: Union[BytesIO, Path, str],
+    *,
+    sr: float = 16000,
+    mono: bool = True,
+) -> tuple:
+    """Load an audio file without depending on the full vLLM import chain.
+
+    Tries soundfile first, falls back to PyAV (FFmpeg). Returns
+    ``(waveform, sample_rate)`` where *waveform* is a 1-D float32 array.
+    """
+    try:
+        import soundfile  # type: ignore[import]
+
+        with soundfile.SoundFile(path) as f:
+            native_sr = f.samplerate
+            y = f.read(dtype="float32", always_2d=False).T
+
+        if mono and y.ndim > 1:
+            y = np.mean(y, axis=tuple(range(y.ndim - 1)))
+
+        if sr is not None and int(sr) != native_sr:
+            y = _resample_pyav(y, orig_sr=native_sr, target_sr=int(sr))
+            return y, int(sr)
+        return y, native_sr
+    except Exception:
+        pass
+
+    import av  # type: ignore[import]
+
+    with av.open(path) as container:
+        stream = container.streams.audio[0]
+        native_sr = stream.rate
+        target_sr = int(sr) if sr is not None else native_sr
+        needs_resample = target_sr != native_sr
+        resampler = (
+            av.AudioResampler(format="fltp", layout="mono", rate=target_sr)
+            if needs_resample or mono
+            else None
+        )
+        chunks = []
+        for frame in container.decode(stream):
+            if resampler is not None:
+                for out in resampler.resample(frame):
+                    chunks.append(out.to_ndarray())
+            else:
+                chunks.append(frame.to_ndarray())
+
+    if not chunks:
+        raise ValueError("No audio found in the file.")
+
+    audio = np.concatenate(chunks, axis=-1).astype(np.float32)
+    if mono and audio.ndim > 1:
+        audio = np.mean(audio, axis=0)
+    return audio, target_sr
+
+
+def _resample_pyav(
+    audio: np.ndarray,
+    *,
+    orig_sr: int,
+    target_sr: int,
+) -> np.ndarray:
+    """Resample a 1-D float32 waveform using PyAV / libswresample."""
+    if orig_sr == target_sr:
+        return audio
+
+    import av  # type: ignore[import]
+
+    expected_len = int(math.ceil(len(audio) * target_sr / orig_sr))
+    min_samples = 1024
+    padded = audio
+    if len(audio) < min_samples:
+        padded = np.concatenate(
+            [audio, np.zeros(min_samples - len(audio), dtype=np.float32)]
+        )
+
+    frame = av.AudioFrame.from_ndarray(
+        padded[np.newaxis, :], format="fltp", layout="mono"
+    )
+    frame.sample_rate = orig_sr
+
+    resampler = av.AudioResampler(format="fltp", layout="mono", rate=target_sr)
+    out_chunks = []
+    for out in resampler.resample(frame):
+        out_chunks.append(out.to_ndarray())
+    for out in resampler.resample(None):
+        out_chunks.append(out.to_ndarray())
+
+    if not out_chunks:
+        return audio
+    result = np.concatenate(out_chunks, axis=-1).flatten().astype(np.float32)
+    return result[:expected_len]
 
 
 def audio_to_pcm16_base64(
@@ -56,7 +152,7 @@ def audio_to_pcm16_base64(
     """
     sr = 16000
     # Load audio and resample to 16kHz mono
-    audio, _ = load_audio(audio_path, sr=sr, mono=True)
+    audio, _ = _load_audio(audio_path, sr=sr, mono=True)
     # Slice the requested [start_ms, end_ms) segment, clamping to audio bounds.
     start_sample = max(0, int(start_ms * sr / 1000))
     if end_ms is None:
@@ -152,7 +248,9 @@ def main(args):
     if args.audio_path:
         audio_path = args.audio_path
     else:
-        # Use default audio asset
+        # Use default audio asset — import vllm only when needed
+        from vllm.assets.audio import AudioAsset  # noqa: PLC0415
+
         audio_path = str(AudioAsset("mary_had_lamb").get_local_path())
         print(f"No audio path provided, using default: {audio_path}")
 
