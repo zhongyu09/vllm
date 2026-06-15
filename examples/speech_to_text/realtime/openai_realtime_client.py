@@ -33,23 +33,62 @@ from vllm.assets.audio import AudioAsset
 from vllm.multimodal.media.audio import load_audio
 
 
-def audio_to_pcm16_base64(audio_path: str) -> str:
+def audio_to_pcm16_base64(
+    audio_path: str,
+    start_ms: int = 0,
+    end_ms: int | None = None,
+    pad_with_silence: bool = False,
+) -> str:
     """
     Load an audio file and convert it to base64-encoded PCM16 @ 16kHz.
+
+    Args:
+        audio_path: Path to the audio file.
+        start_ms: Start offset in milliseconds (inclusive). Defaults to 0.
+        end_ms: End offset in milliseconds (exclusive). If None or beyond the
+            audio length, the actual end of the audio is used.
+        pad_with_silence: If True and ``end_ms`` extends past the actual audio
+            length, pad the tail with silence so the segment spans the full
+            ``[start_ms, end_ms)`` range. Has no effect when ``end_ms`` is None.
+
+    Returns:
+        Base64-encoded PCM16 @ 16kHz of the selected segment.
     """
+    sr = 16000
     # Load audio and resample to 16kHz mono
-    audio, _ = load_audio(audio_path, sr=16000, mono=True)
+    audio, _ = load_audio(audio_path, sr=sr, mono=True)
+    # Slice the requested [start_ms, end_ms) segment, clamping to audio bounds.
+    start_sample = max(0, int(start_ms * sr / 1000))
+    if end_ms is None:
+        end_sample = len(audio)
+    else:
+        end_sample = int(end_ms * sr / 1000)
+    audio = audio[start_sample : min(len(audio), end_sample)]
+    # Pad the tail with silence if the requested end runs past the audio.
+    if pad_with_silence and end_ms is not None and end_sample > start_sample:
+        pad_samples = (end_sample - start_sample) - len(audio)
+        if pad_samples > 0:
+            audio = np.concatenate([audio, np.zeros(pad_samples, dtype=audio.dtype)])
     # Convert to PCM16
     pcm16 = (audio * 32767).astype(np.int16)
     # Encode as base64
     return base64.b64encode(pcm16.tobytes()).decode("utf-8")
 
 
-async def realtime_transcribe(audio_path: str, host: str, port: int, model: str):
+async def realtime_transcribe(
+    audio_path: str,
+    host: str,
+    port: int,
+    model: str,
+    uri: str | None = None,
+    start_ms: int = 0,
+    end_ms: int | None = None,
+):
     """
     Connect to the Realtime API and transcribe an audio file.
     """
-    uri = f"ws://{host}:{port}/v1/realtime"
+    if uri is None:
+        uri = f"ws://{host}:{port}/v1/realtime"
 
     async with websockets.connect(uri) as ws:
         # Wait for session.created
@@ -68,7 +107,9 @@ async def realtime_transcribe(audio_path: str, host: str, port: int, model: str)
 
         # Convert audio file to base64 PCM16
         print(f"Loading audio from: {audio_path}")
-        audio_base64 = audio_to_pcm16_base64(audio_path)
+        audio_base64 = audio_to_pcm16_base64(
+            audio_path, start_ms, end_ms, pad_with_silence=True
+        )
 
         # Send audio in chunks (4KB of raw audio = ~8KB base64)
         chunk_size = 4096
@@ -115,7 +156,17 @@ def main(args):
         audio_path = str(AudioAsset("mary_had_lamb").get_local_path())
         print(f"No audio path provided, using default: {audio_path}")
 
-    asyncio.run(realtime_transcribe(audio_path, args.host, args.port, args.model))
+    asyncio.run(
+        realtime_transcribe(
+            audio_path,
+            args.host,
+            args.port,
+            args.model,
+            args.uri,
+            args.start_ms,
+            args.end_ms,
+        )
+    )
 
 
 if __name__ == "__main__":
@@ -145,6 +196,25 @@ if __name__ == "__main__":
         type=int,
         default=8000,
         help="vLLM server port (default: 8000)",
+    )
+    parser.add_argument(
+        "--uri",
+        type=str,
+        default=None,
+        help="Full WebSocket URI (e.g. ws://host:port/v1/realtime). "
+        "If provided, --host and --port are ignored.",
+    )
+    parser.add_argument(
+        "--start_ms",
+        type=int,
+        default=0,
+        help="Start offset of audio in milliseconds (default: 0).",
+    )
+    parser.add_argument(
+        "--end_ms",
+        type=int,
+        default=None,
+        help="End offset of audio in milliseconds. If not set, uses the full audio.",
     )
     args = parser.parse_args()
     main(args)
