@@ -10,7 +10,7 @@ Qwen3-ASR Realtime 是在 vLLM 中为 Qwen3-ASR 模型提供的**低延迟流式
 
 - **边收边算**：音频还没说完就开始出字，降低首字延迟与端到端延迟。
 - **分段处理**：把连续音频切成固定时长的小段（默认 5s）逐段送入引擎。
-- **自回归上下文延续**：上一段的输出 token 作为下一段的前缀上下文，保证跨段语义连贯，并通过 prefix caching 复用 KV cache。
+- **引擎级会话延续**：所有分段挂在同一 request 上，调度器可复用历史 KV；但当前 Qwen3-ASR realtime 尚未实现官方 SDK 式的 `response_prefix`/rollback 跨段续写。
 
 涉及的主要源码文件：
 
@@ -72,7 +72,7 @@ flowchart TB
 ### 关键设计点
 
 1. **单请求多输入（streaming input request）**：整个 WebSocket 会话内的所有音频分段，复用引擎里的**同一个 `request_id`**。每个分段不是一个新请求，而是对同一请求的一次「输入追加」。
-2. **自回归滚动上下文**：第 N 段产生的输出 token 会被回填进 `input_stream`，成为第 N+1 段的上下文前缀，从而保证语义连贯，并使 KV cache 命中前缀缓存。
+2. **引擎级流式会话延续**：连接层会把第 N 段产生的输出 token 回填进 `input_stream`，引擎也支持把后续输入追加到同一 request 中复用 KV cache；但当前 Qwen3-ASR realtime 的 `buffer_realtime_audio` 没有消费 `input_stream`，所以这不等同于官方 SDK 的 `response_prefix` 续写机制。
 3. **占位符展开对齐 MRoPE**：实时处理器需要把单个 `<|audio_pad|>` 占位展开成 `audio_len` 个 token，使得 MRoPE 位置计算与真实序列长度一致。
 
 ## 3. 模型结构
@@ -155,7 +155,7 @@ sequenceDiagram
 - **音频解码**：`input_audio_buffer.append` 把 base64 → `int16` → `float32 / 32768.0`，并做文件大小与空音频校验，然后 `audio_queue.put_nowait(audio_array)`。
 - **模型校验门禁**：`commit` 前若未 `session.update` 成功，则返回 `model_not_validated` 错误。
 - **生成任务**：`start_generation()` 把 `audio_stream_generator()`（从队列消费）交给 `serving.transcribe_realtime()`，再创建 `_run_generation` 异步任务。
-- **结果回流与上下文回填**：`_run_generation` 遍历引擎输出，逐 delta 发送 `transcription.delta`，同时把 `output.token_ids` 通过 `input_stream.put_nowait(...)` 回填，用作下一段的上下文。
+- **结果回流与 token 回填**：`_run_generation` 遍历引擎输出，逐 delta 发送 `transcription.delta`，同时把 `output.token_ids` 通过 `input_stream.put_nowait(...)` 回填。但当前 Qwen3-ASR 侧没有读取该队列，因此这一路回填没有变成下一段的 SDK 式续写前缀。
 - **采样参数**：`temperature=0.0`、`max_tokens=realtime_max_tokens`(=64)、`output_kind=DELTA`、`skip_clone=True`。
 - **清理**：连接断开时放入 `None` 哨兵并取消生成任务。
 
@@ -226,7 +226,7 @@ async for prompt in stream_input_iter:
 当 `generate()` 收到的 `prompt` 是一个 `AsyncGenerator` 时，走 `_add_streaming_input_request` 分支：
 
 - 先用占位 prompt（`[0]`）构造一个 `final_req`，作为**输入流结束的信号**与统一的 `internal_req_id`。
-- 后台 `handle_inputs()` 协程不断从 `input_stream` 取出每个分段，调用 `process_inputs(..., resumable=True)` 并 `_add_request` 到**同一个 request**。
+- 后台 `handle_inputs()` 协程不断从 `StreamingInput` 生成器取出每个分段，调用 `process_inputs(..., resumable=True)` 并 `_add_request` 到**同一个 request**。
 - 流结束（生成器耗尽且未取消）时，把 `final_req` 加入队列，标记会话结束。
 
 ```mermaid
@@ -237,20 +237,20 @@ flowchart TB
     SC -->|"prefix caching 复用 KV"| KV["KV Cache"]
     SC --> OUT["RequestOutput (DELTA)"]
     OUT -->|"token_ids 回填"| IS["input_stream 队列"]
-    IS -.->|"作为下一段上下文前缀"| G
+    IS -.->|"Qwen3-ASR 当前实现未消费"| G
     END["音频结束: final_req"] --> SC
 ```
 
 ### 6.3 会话上下文延续（`scheduler.py`）
 
-`_update_request_as_session` 是跨段语义连贯的关键：当一段处理完、下一段到达时，调度器会：
+`_update_request_as_session` 是 vLLM 引擎层流式会话延续的关键：当一段处理完、下一段到达时，调度器会：
 
 1. 保留上一段已计算的**输出 token**（丢弃最后一个采样 token）。
 2. 把这些保留的输出 token **追加进 prompt 前缀**（`prompt_token_ids.extend(kept_output_tokens)`）。
 3. 把新一段的音频/文本 token 追加到序列尾，并更新 block hash、`num_prompt_tokens`、采样参数。
 4. 由于前缀未变，prefix caching 可以**复用已有 KV cache**，只需为新增的音频段做前向计算。
 
-这就实现了「上一段输出 → 下一段上下文」的自回归滚动，既保证连贯性又避免重复计算。
+这在**引擎机械层面**实现了「上一段输出 → 下一段上下文」的自回归滚动，并能复用 KV cache。但对当前 Qwen3-ASR realtime 实现要特别注意：`buffer_realtime_audio` 接收了 `input_stream` 却没有消费它，每段仍构造一个新的完整 ChatML user/assistant 轮次。因此，上一段文本虽然可能留在同一请求的历史 KV 中，但它不是官方 SDK 那种注入到**当前 assistant 轮**里的续写前缀，不能等价为有效的 SDK 式跨段上下文。
 
 #### 6.3.1 源码逐步拆解
 
@@ -323,7 +323,7 @@ language Chinese <asr_text> 今 天 天 气
 <|im_start|>user\n <|audio_start|> [AUD][AUD][AUD] <|audio_end|> <|im_end|>\n <|im_start|>assistant\n
 ```
 
-即新的 `prompt_token_ids = P1 + 今天天气 + P2`，`num_prompt_tokens` 更新为三段之和；第 2 段音频的 `mm_features.offset` 平移到 `len(P1 + 今天天气)`。模型在此基础上续写第 2 段转写，凭借上下文里的「今天天气」保持跨段一致性。
+即新的 `prompt_token_ids = P1 + 今天天气 + P2`，`num_prompt_tokens` 更新为三段之和；第 2 段音频的 `mm_features.offset` 平移到 `len(P1 + 今天天气)`。这说明历史内容在引擎序列里存在并可复用 KV，但它位于**上一轮 assistant 输出**中，而当前段又以新的 `<|im_start|>assistant\n` 开始生成。因此对 Qwen3-ASR 这种单轮 ASR prompt 来说，它更像历史对话，而不是「当前转写已写到这里」的续写前缀。
 
 #### 6.3.3 计算与缓存层面
 
@@ -356,7 +356,8 @@ flowchart LR
 
 - 这里的「历史音频」并非每段重新编码，而是首次 prefill 时音频塔产出 embedding、经 `merge_multimodal_embeddings` 填入占位后形成的**语言模型 KV cache**，后续各段经 prefix caching 直接复用。
 - 因此前缀序列形如 `P1 + 转写1 + P2 + 转写2 + … + P_N`，**长度只增不减**；调度器仅对最新一段 `P_N` 做 prefill，前面全部命中缓存。
-- 音频编码与历史文本共同构成上下文，是跨段标点、术语、口音风格保持连贯的根本原因；但也意味着长会话下上下文持续增长，需关注 `max_model_len` 上限。
+- 音频编码与历史文本共同构成引擎侧历史上下文；但由于当前 Qwen3-ASR realtime 未把历史文本注入当前 assistant 轮作为 `response_prefix`，这种上下文不等同于官方 SDK 的跨段续写机制，实际质量仍可能出现边界重复、前缀泄漏和不可修正错误。
+- 前缀持续增长意味着长会话下需关注 `max_model_len` 上限。
 
 ## 7. 端到端数据流（汇总）
 
@@ -382,7 +383,7 @@ sequenceDiagram
     SC-->>AL: 输出 token (DELTA)
     AL-->>CN: RequestOutput
     CN-->>C: transcription.delta
-    CN->>SR: token_ids 回填 input_stream (下一段上下文)
+    CN->>SR: token_ids 回填 input_stream (Qwen3-ASR 当前未消费)
     C->>CN: commit(final=true)
     BR->>SR: flush 尾段
     SC-->>CN: 最终输出
@@ -524,7 +525,7 @@ flowchart LR
 2. **不可修正（无 local agreement）**：本仓库 append-only，边界错词一旦发出永久保留；官方每步重解码最后 5 token，可在更多音频到来后纠错。
 3. **回滚窗口几乎为 0**：本仓库仅丢弃最后 1 个停止 token，等于立即固定全部内容；官方留 5 token 修正余量。
 
-本仓库的优势面：5s 段比 2s 段在**段内**上下文更充足，段内识别可能更稳；文本上下文同样并入前缀，保证语言层面连贯。所以并非「差很多」，而是**在边界处更易丢分且错误不可逆**。
+本仓库的优势面：5s 段比 2s 段在**段内**上下文更充足，段内识别可能更稳；引擎层历史 KV 也能被复用，系统效率更好。但由于历史文本没有作为当前 assistant 轮的 `response_prefix` 注入，它的有效跨段语义连贯不应高估，主要风险仍是**边界处更易丢分且错误不可逆**。
 
 权衡本质：
 
@@ -537,12 +538,230 @@ flowchart LR
 - **引入有限回滚**：把最后 K 个 token 标为未固定、允许下一段重解码（需扩展 `_update_request_as_session` 不只丢 1 个 token），逼近官方 local-agreement。
 - **chunk_size 可配**：把硬编码的 `segment_duration_s=5.0` 暴露为参数，在延迟/精度间调参。
 
-## 11. 小结
+## 11. 上游 issue 与修复方案进展
 
-Qwen3-ASR Realtime 通过「**固定时长分段 + 单请求多输入 + 自回归上下文延续 + 前缀 KV 复用**」四个机制，把一个标准自回归 ASR 模型改造成低延迟流式转写服务：
+### 11.1 issue #35767 的问题诊断
+
+GitHub issue `vllm-project/vllm#35767` 指出，当前 `/v1/realtime` 的 Qwen3-ASR 输出明显劣于 REST 批式转写，核心原因是它没有实现官方 SDK 风格的跨段 streaming。问题可以拆成 5 类：
+
+| 问题 | 现象 | 根因 |
+| --- | --- | --- |
+| `input_stream` 接收但不消费 | `connection.py` 会把输出 token 放入 `input_stream`，但 `Qwen3ASRRealtimeGeneration.buffer_realtime_audio` 从不读取 | 上一段输出没有被拼进下一段当前 assistant 轮 |
+| 段边界重复 | 相邻 5s 段可能重复转写同一段话 | 每段都用相同的完整 prompt、只看当前段音频 |
+| 原始格式泄漏 | 客户端看到 `language English<asr_text>` | realtime 直接发送 raw delta，没有像 REST 端点那样调用模型后处理 |
+| 没有 draft/finalize | 边界词一旦发出不可修正 | 缺少官方 SDK 的 `unfixed_token_num` / rollback / holdback 机制 |
+| 5s 分段硬编码 | 首字延迟高，且无法按场景调参 | `segment_duration_s=5.0` 写死在模型代码中 |
+
+这里的「没有 cross-segment context」不是说引擎里完全没有历史 KV，而是说**没有模型真正会用来续写当前转写的上下文**：历史文本没有作为当前 assistant 轮的 `response_prefix` 注入，历史音频也没有随增长窗口重喂，因此不能达到官方 SDK 的 streaming 质量。
+
+### 11.2 两种“上下文机制”的区别
+
+下面用同一句「我们今天去公园」说明差异。假设第 1 段听到「我们今天」，第 2 段听到「去公园」。
+
+**机制 A：当前 vLLM realtime 的引擎 KV 延续**
+
+```text
+第 1 段 prompt:
+<|im_start|>user
+[音频1=我们今天]
+<|im_end|>
+<|im_start|>assistant
+
+第 1 段输出:
+language Chinese<asr_text>我们今天
+
+第 2 段拼接后的序列:
+<|im_start|>user
+[音频1=我们今天]
+<|im_end|>
+<|im_start|>assistant
+language Chinese<asr_text>我们今天        # 上一轮历史
+<|im_start|>user
+[音频2=去公园]
+<|im_end|>
+<|im_start|>assistant                    # 当前轮从这里重新开始
+```
+
+上一段文本和音频编码确实在历史 KV 中，但它们位于**上一轮对话**，当前轮仍从新的 assistant 起点开始。因此模型容易每段重新输出 `language Chinese<asr_text>`，也不会自然地把上一段当成「已经写好的当前转写前缀」。
+
+**机制 B：官方 SDK / `response_prefix` 续写机制**
+
+```text
+第 1 步:
+prompt = prompt_raw + ""
+audio = audio[0:2s]
+输出 = language Chinese<asr_text>我们
+
+第 2 步:
+prefix = rollback("language Chinese<asr_text>我们", drop_last_k=5)
+prompt = prompt_raw + prefix              # prefix 在当前 assistant 轮内
+audio = audio[0:4s]                       # 全量增长音频
+输出 = prefix 后面的续写 / 修正尾部
+```
+
+机制 B 的关键是：上一段稳定文本直接注入**当前 assistant 轮**，模型从这个位置继续写；尾部若不稳定，会通过 rollback 让模型在更多音频到来后重新决定。这是 issue 希望接入的有效跨段上下文。
+
+### 11.3 PR #35894：服务端 SDK 式 streaming（已关闭）
+
+PR `#35894` 尝试在 `/v1/realtime` 内直接复刻官方 SDK 方案：
+
+- 将固定 5s 分段改成可配置 segment；
+- 累积全量音频，每步重新送入模型；
+- 消费 `input_stream`，把上一段输出通过 rollback 后拼进下一段 prompt；
+- 实现 holdback：只发送稳定 token，尾部不稳定 token 暂扣；
+- 暴露 `segment_duration_s`、`rollback_tokens`、`unfixed_chunks`、`max_prefix_tokens`、`max_audio_s`、`realtime_max_tokens` 等会话参数；
+- 修改引擎流式输入结束处理，避免单段完成就终止整个流。
+
+这个方向能提升质量，但最终作为 draft 关闭。主要原因有两个：
+
+1. **模型特定逻辑泄漏到共享层**：`connection.py`、`serving.py`、`protocol.py`、`async_llm.py` 都需要知道 Qwen 的 rollback、holdback、session 参数，破坏了通用 realtime 抽象。
+2. **机制 B 的 O(n²) 成本不适合任意长音频**：官方方案每步重喂全量增长音频。第 k 步处理 0 到 k 个 chunk，累计成本近似 `1 + 2 + ... + N`，长流和多租户服务会越来越慢。
+
+### 11.4 RFC #35908：模型特定 realtime 抽象
+
+RFC `#35908` 将问题上升为抽象设计：不同 ASR 模型的 streaming 策略差异很大。例如 Qwen3-ASR 是「增长音频 + prefix rollback」，Voxtral 是「固定帧 + token feedback」。现有 `SupportsRealtime.buffer_realtime_audio(...)` 太薄，无法表达这些差异。
+
+RFC 提出三个选项：
+
+| 方案 | 做法 | 优点 | 缺点 |
+| --- | --- | --- | --- |
+| Option A | 在 REST `/v1/audio/transcriptions` 加 `response_prefix`，让调用方自己实现 streaming loop | 改动小、模型无关、复用 HTTP | 调用方要重传增长音频，有带宽和 RTT 成本 |
+| Option B | 扩展 `SupportsRealtime`，让模型声明 `format_output_delta()`、`get_session_schema()` 等 | 共享层保持模型无关，模型策略下沉 | 抽象复杂，目前模型样本少，可能过早设计 |
+| Option C | 先做 Option A，等更多模型出现后再设计 Option B | 先解决用户痛点，风险低 | 同时维护 REST prefix 和 WebSocket realtime 两条路 |
+
+讨论中社区倾向 Option C：先用最小、向后兼容的 REST `response_prefix` 解燃眉之急，同时推迟更复杂的 realtime 协议设计。
+
+### 11.5 PR #36018：`response_prefix`（Option A）
+
+PR `#36018` 在 `/v1/audio/transcriptions` 与 `/v1/audio/translations` 增加可选 `response_prefix` 参数。对 Qwen3-ASR 来说，它会被拼到 assistant 轮的 `<asr_text>` 后面：
+
+```text
+<|im_start|>assistant
+language English<asr_text>{response_prefix}
+```
+
+调用方可以这样实现 SDK 式 streaming：
+
+```text
+1. POST audio[0:2s], response_prefix=""             -> T1
+2. POST audio[0:4s], response_prefix=rollback(T1)   -> T2
+3. POST audio[0:6s], response_prefix=rollback(T2)   -> T3
+```
+
+这个 PR 的价值是：vLLM 服务端只提供一个模型无关的小接口，音频累积、rollback、prefix capping 都由调用方控制。它还特别处理了 prompt injection 风险，对 `prompt` / `response_prefix` 做 ChatML 控制 token 与 `<asr_text>` 的清洗。
+
+### 11.6 PR #42478：流式后处理剥离 Qwen 前缀
+
+PR `#42478` 只解决「raw `language ...<asr_text>` 泄漏」这一类问题，不试图实现完整 realtime streaming。它增加了模型级 streaming 后处理钩子：
+
+- 默认 post-processor 为 no-op，避免影响其他 ASR 模型；
+- Qwen3-ASR 实现有状态的流式后处理器；
+- 当 `language ...<asr_text>` 被拆成多个 delta 时，先缓冲，直到看到完整 `<asr_text>` 后再只发送真正转写文本；
+- 普通文本或不符合 Qwen 格式的输出直接透传。
+
+这属于精确止血：修格式泄漏，但不解决 `input_stream` 未消费、无 rollback、无增长音频窗口等质量问题。
+
+## 12. userspace 包装 SDK 方案
+
+所谓 userspace 包装，是指**不修改 vLLM 主干，也不使用当前 `/v1/realtime` 的 Qwen3-ASR 路径**，而是在自己的应用服务里复刻官方 SDK 的滚动解码循环，把 vLLM 仅当作无状态推理引擎使用。
+
+### 12.1 基本架构
+
+```mermaid
+flowchart LR
+    subgraph BAD["直接用 vLLM /v1/realtime"]
+        C1["客户端"] --> RT["/v1/realtime<br/>固定5s分段<br/>无SDK式rollback"]
+    end
+    subgraph WRAP["userspace 包装"]
+        C2["客户端"] --> APP["自建薄服务<br/>维护 session state<br/>累积音频 + rollback + sanitize"]
+        APP -->|"每步独立 request_id"| ENG["vLLM AsyncLLMEngine.generate()<br/>普通无状态请求"]
+    end
+```
+
+应用层为每个会话维护状态：
+
+| 状态 | 作用 |
+| --- | --- |
+| `audio_accum` | 从流开始到当前时刻的累计音频 |
+| `buffer` | 不足一个 chunk 的临时音频 |
+| `_raw_decoded` | 上一次完整 raw 输出，用于 rollback |
+| `language` / `text` | 清洗后的最新结果 |
+| `chunk_id` | 决定前若干 chunk 是否跳过 prefix |
+
+### 12.2 核心循环
+
+```python
+async def on_audio_chunk(session, chunk):
+    session.buffer += chunk
+    if len(session.buffer) < session.chunk_size_samples:
+        return
+
+    new_chunk = session.buffer[:session.chunk_size_samples]
+    session.buffer = session.buffer[session.chunk_size_samples:]
+    session.audio_accum = concat(session.audio_accum, new_chunk)
+
+    if session.chunk_id < session.unfixed_chunk_num:
+        prefix = ""
+    else:
+        prefix = rollback_last_k_tokens(
+            session.raw_decoded,
+            k=session.unfixed_token_num,
+        )
+
+    prompt = session.prompt_raw + prefix
+    inp = {
+        "prompt": prompt,
+        "multi_modal_data": {"audio": [session.audio_accum]},
+    }
+
+    output = await engine.generate(
+        prompt=inp,
+        sampling_params=session.sampling_params,
+        request_id=f"{session.id}-{session.chunk_id}",
+    )
+
+    session.raw_decoded = prefix + collect_text(output)
+    session.text = strip_qwen_asr_prefix(session.raw_decoded)
+    session.chunk_id += 1
+    send_to_client(session.text)
+```
+
+关键点：
+
+- 每步都是**新的普通 vLLM 请求**，通常使用不同 `request_id`；
+- vLLM 不知道这是一个流式会话，session 状态全部由外部服务维护；
+- 外部服务自己做官方 SDK 的三件事：增长音频、回滚前缀、剥离 `language ...<asr_text>`；
+- 如果用 `AsyncLLMEngine`，仍可获得 vLLM 的异步调度和多请求并发能力，但没有跨步 KV 复用。
+
+### 12.3 两种实现形态
+
+| 形态 | 描述 | 适用场景 |
+| --- | --- | --- |
+| 直接用官方 `qwen-asr[vllm]` SDK | `Qwen3ASRModel.LLM(...)` + `streaming_transcribe(segment, state)` | 单机 demo、低并发、快速验证 |
+| 自建多租户薄服务 | 复刻 SDK loop，底层调用 `AsyncLLMEngine.generate()` | 多用户在线服务、需要自定义协议或鉴权 |
+
+issue 评论中提到的 `qwen3-asr-mt` 属于第二类：它试图作为 `qwen-asr-demo-streaming` 的 drop-in replacement，对外保留类似 HTTP 形状，对内用 vLLM `AsyncLLMEngine` 做多租户推理。
+
+### 12.4 优缺点
+
+| 维度 | userspace 包装 |
+| --- | --- |
+| 上手 | 不等上游合并，今天就能跑 |
+| 准确率 | 复刻官方 SDK 的增长音频 + prefix rollback，边界质量更接近论文 streaming |
+| 多租户 | 自建薄服务可用 `AsyncLLMEngine` 承载并发 |
+| 长音频性能 | 继承机制 B 的 O(n²) 重编码成本，越长越慢 |
+| 维护成本 | Qwen 特定逻辑在外部服务里维护，换模型要重写 |
+| 标准化 | 不是 vLLM 标准 `/v1/realtime`，协议和客户端由自己负责 |
+
+它本质上是 Option A 的外部化版本：**把 streaming 逻辑放在调用方/代理服务里，vLLM 只负责跑一次次普通转写**。如果未来 `response_prefix` 合入，userspace 包装可以变得更简单：外部服务不必自己拼完整 ChatML，只需调用 REST 转写端点并传入 `response_prefix=rollback(previous_text)`。
+
+## 13. 小结
+
+Qwen3-ASR Realtime 通过「**固定时长分段 + 单请求多输入 + 引擎级会话延续 + 前缀 KV 复用**」四个机制，把一个标准自回归 ASR 模型接入为低延迟流式转写服务：
 
 1. WebSocket 连接层负责协议与音频缓冲；
 2. `buffer_realtime_audio` 把音频流切成 5s 段并构造统一的 ChatML prompt；
 3. 实时多模态处理器展开 `audio_pad` 占位以对齐 MRoPE；
-4. 引擎把所有分段挂到同一请求上，调度器借助会话延续与 prefix caching 实现连贯且高效的增量解码；
-5. 识别结果以 delta 流式回推，结束时给出完整文本与用量统计。
+4. 引擎把所有分段挂到同一请求上，调度器借助会话延续与 prefix caching 实现高效的 KV 复用；
+5. 但当前 Qwen3-ASR realtime 未消费 `input_stream`、未实现官方 SDK 的增长音频窗口 / `response_prefix` / rollback / holdback，因此它的有效跨段质量仍弱于官方 streaming；
+6. 识别结果以 delta 流式回推，结束时给出完整文本与用量统计。
